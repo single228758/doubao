@@ -40,10 +40,15 @@ dify-on-wechat/chatgpt-on-wechat插件，实现豆包生图，参考图编辑，
 7. 抠图：抠图 上传图片抠出主体
 
 ## 示例
-1. 豆包 一只汉服美女 人像摄影 2:3
-2. $u 1704067890 2
-3. $v 1704067890 2 戴个墨镜
-4. $k 1704067890 2 16:9
-5. 抠图
-6. 参考图 戴个帽子
+1. 豆包 一只汉服美女 人像摄影 2:3![TempDragFile_20250130_122242](https://github.com/user-attachments/assets/c776ebb0-8b92-41a6-858e-510a64a28b71)
+2. $u 1704067890 2 ![Screenshot_2025_0130_122405](https://github.com/user-attachments/assets/f4c6c327-b112-47f1-8250-864b52d45d41)
+3. $v 1704067890 2 戴个墨镜![Screenshot_2025_0130_122933](https://github.com/user-attachments/assets/3ba60b92-d613-4134-a632-0e5f73737ccd)
+
+4. $k 1704067890 2 16:9![Screenshot_2025_0130_123054](https://github.com/user-attachments/assets/799bab49-c5aa-4ff6-9525-43a693005d05)
+
+5. 抠图![Screenshot_2025_0130_122727](https://github.com/user-attachments/assets/c168e3eb-cd46-4dcc-a10f-4efe980550b9)
+6. 参考图 戴个帽子![Screenshot_2025_0130_122933](https://github.com/user-attachments/assets/650583fe-46ac-43e4-9e45-fdf06e6547fe)
+
 7. 重绘 反选 换成海边
+
+
