@@ -47,8 +47,10 @@ dify-on-wechat/chatgpt-on-wechat插件，实现豆包生图，参考图编辑，
 4. $k 1704067890 2 16:9![Screenshot_2025_0130_123054](https://github.com/user-attachments/assets/799bab49-c5aa-4ff6-9525-43a693005d05)
 
 5. 抠图![Screenshot_2025_0130_122727](https://github.com/user-attachments/assets/c168e3eb-cd46-4dcc-a10f-4efe980550b9)
-6. 参考图 戴个帽子![Screenshot_2025_0130_122933](https://github.com/user-attachments/assets/650583fe-46ac-43e4-9e45-fdf06e6547fe)
+6. 参考图 换成二次元风格![Screenshot_2025_0130_124332](https://github.com/user-attachments/assets/203914e7-9b58-496e-8052-d851f7c435b2)
 
-7. 重绘 反选 换成海边
+
+7. 重绘 反选 换成温馨室内![18839](https://github.com/user-attachments/assets/c90bc9bd-9c64-47ff-9a37-75d3feeff192)
+
 
 
