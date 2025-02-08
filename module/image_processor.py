@@ -1,9 +1,12 @@
 import os
 import time
 import requests
+import cv2
+import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 import io
 import base64
+from sklearn.cluster import KMeans
 from common.log import logger
 
 class ImageProcessor:
@@ -15,8 +18,56 @@ class ImageProcessor:
 
     def _ensure_temp_dir(self):
         """确保临时目录存在"""
-        if not os.path.exists(self.temp_dir):
-            os.makedirs(self.temp_dir)
+        os.makedirs(self.temp_dir, exist_ok=True)
+
+    def _bytes_to_cv(self, image_bytes):
+        """字节数据转OpenCV格式"""
+        np_arr = np.frombuffer(image_bytes, np.uint8)
+        return cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+    def _strict_red_mask(self, image_cv):
+        """精准红色标记检测"""
+        hsv = cv2.cvtColor(image_cv, cv2.COLOR_BGR2HSV)
+        
+        # 精确红色范围（避免检测到橙色或粉色）
+        lower_red = np.array([170, 150, 50])
+        upper_red = np.array([180, 255, 255])
+        mask1 = cv2.inRange(hsv, lower_red, upper_red)
+
+        lower_red2 = np.array([0, 150, 50])
+        upper_red2 = np.array([10, 255, 255])
+        mask2 = cv2.inRange(hsv, lower_red2, upper_red2)
+
+        combined = cv2.bitwise_or(mask1, mask2)
+        
+        # 精准形态学处理（仅闭合小间隙）
+        kernel = np.ones((3,3), np.uint8)
+        return cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    def _exact_contour_mask(self, red_mask):
+        """生成精准轮廓蒙版"""
+        # 精准轮廓查找
+        contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        # 找到最大有效轮廓（面积>50像素）
+        main_contour = max(
+            [c for c in contours if cv2.contourArea(c) > 50],
+            key=cv2.contourArea,
+            default=None
+        )
+        if main_contour is None:
+            return None
+
+        # 高精度多边形近似（epsilon=0.1%周长）
+        epsilon = 0.001 * cv2.arcLength(main_contour, True)
+        approx = cv2.approxPolyDP(main_contour, epsilon, True)
+
+        # 创建精准蒙版
+        mask = np.zeros_like(red_mask)
+        cv2.fillPoly(mask, [approx], 255)
+        return mask
 
     def combine_images(self, image_urls):
         """根据图片数量使用不同的布局方式拼接图片：
@@ -196,149 +247,144 @@ class ImageProcessor:
             return False, f"图片索引超出范围，当前只有{len(image_data['urls'])}张图片"
         return True, None
 
-    def create_mask_from_marked_image(self, original_image_bytes, marked_image_bytes, color_threshold=(200, 50, 50)):
-        """从标记图片创建蒙版
-        Args:
-            original_image_bytes: 原图字节数据
-            marked_image_bytes: 带有红色标记的图片字节数据
-            color_threshold: RGB颜色阈值,用于识别红色区域
-        Returns:
-            str: base64编码的蒙版数据
-        """
+    def _get_dominant_colors(self, image_cv, n_clusters=3):
+        """获取图像的主色调"""
+        pixels = image_cv.reshape(-1, 3)
+        kmeans = KMeans(n_clusters=n_clusters, n_init=10)
+        kmeans.fit(pixels)
+        return kmeans.cluster_centers_.astype(int)
+
+    def _find_contrast_color(self, image_cv):
+        """自动寻找最佳对比色"""
+        # 转换为LAB颜色空间
+        lab = cv2.cvtColor(image_cv, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        
+        # 获取主色调
+        dominant_colors = self._get_dominant_colors(image_cv)
+        main_color = dominant_colors[0]
+        
+        # 在LAB空间计算对比色
+        target_l = 255 - l.mean()
+        target_a = 128 + (128 - a.mean())
+        target_b = 128 + (128 - b.mean())
+        
+        # 限制取值范围
+        target_l = np.clip(target_l, 0, 255)
+        target_a = np.clip(target_a, 0, 255)
+        target_b = np.clip(target_b, 0, 255)
+        
+        # 转换回BGR颜色空间
+        target_lab = np.uint8([[[target_l, target_a, target_b]]])
+        return cv2.cvtColor(target_lab, cv2.COLOR_LAB2BGR)[0][0]
+
+    def _dynamic_color_mask(self, orig_cv, marked_cv):
+        """动态颜色差异蒙版"""
+        # 计算图像差异
+        diff = cv2.absdiff(orig_cv, marked_cv)
+        diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        
+        # 使用自适应阈值
+        _, diff_mask = cv2.threshold(diff_gray, 30, 255, cv2.THRESH_BINARY)
+        
+        # 形态学处理以减少噪点
+        kernel = np.ones((3,3), np.uint8)
+        diff_mask = cv2.morphologyEx(diff_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        diff_mask = cv2.morphologyEx(diff_mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        
+        return diff_mask
+
+    def create_mask_from_marked_image(self, original_image_bytes, marked_image_bytes):
+        """增强版蒙版生成，支持动态颜色检测"""
         try:
-            # 打开原图和标记图片
-            with io.BytesIO(original_image_bytes) as orig_buf, io.BytesIO(marked_image_bytes) as marked_buf:
-                orig_img = Image.open(orig_buf).convert('RGB')
-                marked_img = Image.open(marked_buf).convert('RGB')
-                
-                # 确保两张图片大小相同
-                if orig_img.size != marked_img.size:
-                    marked_img = marked_img.resize(orig_img.size)
-                
-                width, height = orig_img.size
-                
-                # 创建黑色背景的蒙版
-                mask = Image.new('RGB', (width, height), 'black')
-                mask_pixels = mask.load()
-                orig_pixels = orig_img.load()
-                marked_pixels = marked_img.load()
-                
-                # 遍历每个像素
-                for x in range(width):
-                    for y in range(height):
-                        # 获取原图和标记图片的像素值
-                        orig_r, orig_g, orig_b = orig_pixels[x, y]
-                        marked_r, marked_g, marked_b = marked_pixels[x, y]
-                        
-                        # 如果标记图片的像素与原图不同,说明是标记区域
-                        if (abs(marked_r - orig_r) > 30 or 
-                            abs(marked_g - orig_g) > 30 or 
-                            abs(marked_b - orig_b) > 30):
-                            mask_pixels[x, y] = (255, 255, 255)  # 设置为白色
-                
-                # 对蒙版进行膨胀操作,使标记区域更加连续
-                mask = mask.filter(ImageFilter.MaxFilter(3))
-                
-                # 转换为base64
-                buffer = io.BytesIO()
-                mask.save(buffer, format='PNG')
-                mask_base64 = base64.b64encode(buffer.getvalue()).decode()
-                
-                return f"data:image/png;base64,{mask_base64}"
-                
+            # 转换并统一尺寸
+            orig_cv = self._bytes_to_cv(original_image_bytes)
+            marked_cv = self._bytes_to_cv(marked_image_bytes)
+            
+            if orig_cv.shape != marked_cv.shape:
+                marked_cv = cv2.resize(marked_cv, (orig_cv.shape[1], orig_cv.shape[0]))
+
+            # 生成动态差异蒙版
+            mask = self._dynamic_color_mask(orig_cv, marked_cv)
+            
+            # 转换为PIL图像并保持为灰度图
+            pil_mask = Image.fromarray(mask).convert('L')
+            
+            # 保存调试图片
+            debug_path = os.path.join(self.temp_dir, "debug_mask.png")
+            pil_mask.save(debug_path)
+            logger.info(f"[Doubao] Updated mask at: {debug_path}")
+
+            # 转换为RGB并编码返回
+            rgb_mask = pil_mask.convert('RGB')
+            buffer = io.BytesIO()
+            rgb_mask.save(buffer, format="PNG")
+            return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
+
         except Exception as e:
-            logger.error(f"[Doubao] Error creating mask: {e}")
-            return None
+            logger.error(f"[Doubao] Enhanced mask error: {str(e)}")
+            return self._black_mask(orig_cv.shape if 'orig_cv' in locals() else (512,512,3))
 
     def create_mask_from_circle_selection(self, original_image_bytes, marked_image_bytes, invert=False):
-        """从圈选图片创建蒙版
-        Args:
-            original_image_bytes: 原图字节数据
-            marked_image_bytes: 带有圈选标记的图片字节数据
-            invert: 是否反选（选择圈外区域）
-        Returns:
-            str: base64编码的蒙版数据
-        """
+        """增强版精准圈选，支持动态颜色"""
         try:
-            # 打开原图和标记图片
-            with io.BytesIO(original_image_bytes) as orig_buf, io.BytesIO(marked_image_bytes) as marked_buf:
-                orig_img = Image.open(orig_buf).convert('RGB')
-                marked_img = Image.open(marked_buf).convert('RGB')
-                
-                # 确保两张图片大小相同
-                if orig_img.size != marked_img.size:
-                    marked_img = marked_img.resize(orig_img.size)
-                
-                width, height = orig_img.size
-                
-                # 创建黑色背景的蒙版
-                mask = Image.new('RGB', (width, height), 'black')
-                mask_pixels = mask.load()
-                orig_pixels = orig_img.load()
-                marked_pixels = marked_img.load()
-                
-                # 创建临时蒙版用于存储标记线条
-                line_mask = Image.new('RGB', (width, height), 'black')
-                line_pixels = line_mask.load()
-                
-                # 检测标记区域
-                for x in range(width):
-                    for y in range(height):
-                        orig_r, orig_g, orig_b = orig_pixels[x, y]
-                        marked_r, marked_g, marked_b = marked_pixels[x, y]
-                        
-                        # 检测红色标记或明显的颜色差异
-                        if (marked_r > 150 and marked_g < 100 and marked_b < 100) or \
-                           (abs(marked_r - orig_r) > 30 and marked_r > marked_g and marked_r > marked_b):
-                            line_pixels[x, y] = (255, 255, 255)
-                
-                # 找到所有标记点
-                white_pixels = []
-                for x in range(width):
-                    for y in range(height):
-                        if line_pixels[x, y] == (255, 255, 255):
-                            white_pixels.append((x, y))
-                
-                if white_pixels:
-                    # 计算中心点
-                    center_x = sum(x for x, _ in white_pixels) // len(white_pixels)
-                    center_y = sum(y for _, y in white_pixels) // len(white_pixels)
-                    
-                    # 使用泛洪填充
-                    if len(white_pixels) < width * height * 0.1:  # 如果标记区域较小，认为是圈选
-                        ImageDraw.floodfill(line_mask, (center_x, center_y), (255, 255, 255))
-                    
-                    # 根据是否反选设置最终蒙版
-                    for x in range(width):
-                        for y in range(height):
-                            if not invert:
-                                # 正常模式：标记区域为白色
-                                if line_pixels[x, y] == (255, 255, 255):
-                                    mask_pixels[x, y] = (255, 255, 255)
-                            else:
-                                # 反选模式：标记区域为黑色，其他区域为白色
-                                if line_pixels[x, y] == (255, 255, 255):
-                                    mask_pixels[x, y] = (0, 0, 0)
-                                else:
-                                    mask_pixels[x, y] = (255, 255, 255)
-                
-                # 对蒙版进行平滑处理
-                mask = mask.filter(ImageFilter.MaxFilter(3))
-                
-                # 保存蒙版图片到storage目录
-                storage_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'storage')
-                os.makedirs(storage_dir, exist_ok=True)
-                mask_path = os.path.join(storage_dir, 'mask.png')
-                mask.save(mask_path)
-                logger.info(f"[Doubao] Saved mask image to: {mask_path}")
-                
-                # 转换为base64
-                buffer = io.BytesIO()
-                mask.save(buffer, format='PNG')
-                mask_base64 = base64.b64encode(buffer.getvalue()).decode()
-                
-                return f"data:image/png;base64,{mask_base64}"
-                
+            # 转换并统一尺寸
+            marked_cv = self._bytes_to_cv(marked_image_bytes)
+            orig_cv = self._bytes_to_cv(original_image_bytes)
+            
+            if orig_cv.shape[:2] != marked_cv.shape[:2]:
+                marked_cv = cv2.resize(marked_cv, (orig_cv.shape[1], orig_cv.shape[0]))
+
+            # 生成动态差异蒙版
+            mask = self._dynamic_color_mask(orig_cv, marked_cv)
+            
+            # 获取精准轮廓
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                return self._black_mask(orig_cv.shape)
+
+            # 找到最大有效轮廓
+            main_contour = max(
+                [c for c in contours if cv2.contourArea(c) > 50],
+                key=cv2.contourArea,
+                default=None
+            )
+            if main_contour is None:
+                return self._black_mask(orig_cv.shape)
+
+            # 创建轮廓蒙版
+            mask = np.zeros(orig_cv.shape[:2], dtype=np.uint8)
+            cv2.drawContours(mask, [main_contour], -1, 255, -1)
+
+            # 反选处理 - 确保圈选区域为黑色(0)，外部为白色(255)
+            if invert:
+                mask = cv2.bitwise_not(mask)
+
+            # 转换为PIL图像
+            pil_mask = Image.fromarray(mask).convert('L')
+            
+            # 保存调试图片
+            debug_path = os.path.join(self.temp_dir, "debug_mask.png")
+            pil_mask.save(debug_path)
+            logger.info(f"[Doubao] Updated mask at: {debug_path}")
+            
+            # 转换为RGB并编码返回
+            rgb_mask = pil_mask.convert('RGB')
+            buffer = io.BytesIO()
+            rgb_mask.save(buffer, format="PNG")
+            return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
+
         except Exception as e:
-            logger.error(f"[Doubao] Error creating circle selection mask: {e}")
-            return None 
+            logger.error(f"[Doubao] Enhanced circle mask error: {str(e)}")
+            return self._black_mask(orig_cv.shape if 'orig_cv' in locals() else (512,512,3))
+
+    def _black_mask(self, shape):
+        """生成全黑蒙版（表示无修改区域）"""
+        if isinstance(shape, tuple) and len(shape) >= 2:
+            height, width = shape[:2]
+        else:
+            height, width = shape[0], shape[1]
+        mask = Image.new('L', (width, height), 0)  # 使用'L'模式创建灰度图
+        buffer = io.BytesIO()
+        mask.save(buffer, format="PNG")
+        return f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
