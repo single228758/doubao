@@ -67,4 +67,7 @@ dify-on-wechat/chatgpt-on-wechat插件，实现豆包生图，参考图编辑，
 
 3.kimi最近对话总是会因为使用人数多，不能获取回复，可能使用豆包进行识别图片或者链接总结
 
+4.换背景，自动识别主体区域保留更换背景![20814](https://github.com/user-attachments/assets/e5af6218-8582-4692-bb4d-aa4e3dbd62f2)
+
+
 
