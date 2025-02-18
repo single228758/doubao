@@ -21,11 +21,10 @@ dify-on-wechat/chatgpt-on-wechat插件，实现豆包生图，参考图编辑，
 
 ## 配置说明
 在config.json中配置以下参数：
-1. video_api：API相关配置
-   - cookie：cookie
-   - sign：签名
-   - msToken：token
-   - a_bogus：验证参数
+1. video_api：
+   - cookie：F12抓生成图片请求curl里完整的cookie
+   - msToken：
+   - a_bogus：
 2. storage：存储相关配置
    - retention_days：数据保留天数
 
